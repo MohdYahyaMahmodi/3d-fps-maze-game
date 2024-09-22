@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>3D FPS GAME</title>
+    <title>3D FPS Game</title>
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
@@ -24,12 +24,52 @@
             font-family: Arial, sans-serif;
             z-index: 1;
         }
+        #fpsCounter {
+            position: absolute;
+            width: 100px;
+            color: #ffffff;
+            top: 10px;
+            right: 10px;
+            font-family: Arial, sans-serif;
+            z-index: 1;
+            text-align: right;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            margin-left: -10px;
+            margin-top: -10px;
+            z-index: 2;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+        #crosshair::before {
+            left: 9px;
+            top: 0;
+            width: 2px;
+            height: 20px;
+        }
+        #crosshair::after {
+            left: 0;
+            top: 9px;
+            width: 20px;
+            height: 2px;
+        }
     </style>
 </head>
 <body>
 
 <div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot.</div>
 <div id="scoreboard">Round: 1<br>Enemies Remaining: 0</div>
+<div id="fpsCounter">FPS: 0</div>
+<div id="crosshair"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
@@ -57,15 +97,31 @@
     const moveSpeed = 200.0;
     const lookSpeed = 0.002;
 
+    // Mouse controls
+    let pitchObject, yawObject;
+
+    // FPS Counter
+    let fpsInterval, startTime, now, then, elapsed;
+
     // Initialize the scene
     init();
-    animate();
+    startAnimating(60); // Target 60 FPS
 
     function init() {
         // Scene and Camera
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x808080); // Grey background
-        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 2000);
+
+        // Create a pitch and yaw object for the camera
+        pitchObject = new THREE.Object3D();
+        pitchObject.add(camera);
+
+        yawObject = new THREE.Object3D();
+        yawObject.position.y = 10; // Player height
+        yawObject.add(pitchObject);
+        scene.add(yawObject);
 
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
@@ -75,27 +131,16 @@
         directionalLight.position.set(0, 50, 0);
         scene.add(directionalLight);
 
-        // Room (Box Geometry)
-        const roomSize = 500;
-        const roomGeometry = new THREE.BoxGeometry(roomSize, roomSize, roomSize);
-        const roomMaterials = [
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide }), // Left
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide }), // Right
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide }), // Top
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide }), // Bottom
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide }), // Front
-            new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.BackSide })  // Back
-        ];
-        const room = new THREE.Mesh(roomGeometry, roomMaterials);
-        scene.add(room);
-
         // Floor
-        const floorGeometry = new THREE.PlaneGeometry(roomSize, roomSize);
-        const floorMaterial = new THREE.MeshBasicMaterial({ color: 0x555555 });
+        const floorSize = 1000;
+        const floorGeometry = new THREE.PlaneGeometry(floorSize, floorSize);
+        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
         const floor = new THREE.Mesh(floorGeometry, floorMaterial);
         floor.rotation.x = -Math.PI / 2;
-        floor.position.y = -roomSize / 2;
         scene.add(floor);
+
+        // Walls
+        createWalls(floorSize);
 
         // Renderer
         renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -124,9 +169,12 @@
         // Mouse controls
         const onMouseMove = function (event) {
             if (controlsEnabled) {
-                camera.rotation.y -= event.movementX * lookSpeed;
-                camera.rotation.x -= event.movementY * lookSpeed;
-                camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+                const movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+                const movementY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+
+                yawObject.rotation.y -= movementX * lookSpeed;
+                pitchObject.rotation.x -= movementY * lookSpeed;
+                pitchObject.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObject.rotation.x));
             }
         };
         document.addEventListener('mousemove', onMouseMove, false);
@@ -195,9 +243,33 @@
 
         // Window resize
         window.addEventListener('resize', onWindowResize, false);
+    }
 
-        // Set initial camera position
-        camera.position.set(0, 10, 0); // Start slightly above the floor
+    function createWalls(size) {
+        const wallHeight = 50;
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+
+        const positions = [
+            { x: 0, y: wallHeight / 2, z: -size / 2 }, // Back wall
+            { x: 0, y: wallHeight / 2, z: size / 2 },  // Front wall
+            { x: -size / 2, y: wallHeight / 2, z: 0 }, // Left wall
+            { x: size / 2, y: wallHeight / 2, z: 0 },  // Right wall
+        ];
+
+        const rotations = [
+            { x: 0, y: 0, z: 0 },
+            { x: 0, y: Math.PI, z: 0 },
+            { x: 0, y: -Math.PI / 2, z: 0 },
+            { x: 0, y: Math.PI / 2, z: 0 },
+        ];
+
+        for (let i = 0; i < 4; i++) {
+            const wallGeometry = new THREE.PlaneGeometry(size, wallHeight);
+            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+            wall.position.set(positions[i].x, positions[i].y, positions[i].z);
+            wall.rotation.set(rotations[i].x, rotations[i].y, rotations[i].z);
+            scene.add(wall);
+        }
     }
 
     function onWindowResize() {
@@ -206,82 +278,88 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    function animate() {
+    function startAnimating(fps) {
+        fpsInterval = 1000 / fps;
+        then = performance.now();
+        startTime = then;
+        animate();
+    }
+
+    function animate(newTime) {
         requestAnimationFrame(animate);
 
-        if (controlsEnabled) {
-            const time = performance.now();
-            const delta = (time - prevTime) / 1000;
+        now = performance.now();
+        elapsed = now - then;
 
-            velocity.x -= velocity.x * 10.0 * delta;
-            velocity.z -= velocity.z * 10.0 * delta;
+        if (elapsed > fpsInterval) {
+            then = now - (elapsed % fpsInterval);
 
-            direction.z = Number(moveForward) - Number(moveBackward);
-            direction.x = Number(moveRight) - Number(moveLeft);
-            direction.normalize();
+            if (controlsEnabled) {
+                const delta = (now - prevTime) / 1000;
 
-            if (moveForward || moveBackward) velocity.z -= direction.z * moveSpeed * delta;
-            if (moveLeft || moveRight) velocity.x -= direction.x * moveSpeed * delta;
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
 
-            // Move the camera (player)
-            const rotationMatrix = new THREE.Matrix4();
-            rotationMatrix.extractRotation(camera.matrix);
-            const forward = new THREE.Vector3(0, 0, -1);
-            forward.applyMatrix4(rotationMatrix);
-            const sideways = new THREE.Vector3(-1, 0, 0);
-            sideways.applyMatrix4(rotationMatrix);
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
 
-            camera.position.add(forward.multiplyScalar(velocity.z * delta));
-            camera.position.add(sideways.multiplyScalar(velocity.x * delta));
+                if (moveForward || moveBackward) velocity.z -= direction.z * moveSpeed * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * moveSpeed * delta;
 
-            // Keep the player inside the room
-            const roomLimit = 200;
-            camera.position.x = THREE.MathUtils.clamp(camera.position.x, -roomLimit, roomLimit);
-            camera.position.z = THREE.MathUtils.clamp(camera.position.z, -roomLimit, roomLimit);
+                // Move the player
+                yawObject.translateX(velocity.x * delta);
+                yawObject.translateZ(velocity.z * delta);
 
-            // Keep the camera above the floor
-            camera.position.y = 10;
+                // Keep the player inside the room
+                const roomLimit = 480;
+                yawObject.position.x = THREE.MathUtils.clamp(yawObject.position.x, -roomLimit, roomLimit);
+                yawObject.position.z = THREE.MathUtils.clamp(yawObject.position.z, -roomLimit, roomLimit);
 
-            // Update gun position
-            updateGunPosition();
+                prevTime = now;
 
-            prevTime = time;
+                // Update gun position
+                updateGunPosition();
 
-            // Update enemies
-            updateEnemies(delta);
+                // Update enemies
+                updateEnemies(delta);
 
-            // Update bullets
-            updateBullets(delta);
+                // Update bullets
+                updateBullets(delta);
 
-            // Check if wave is completed
-            if (enemiesRemaining <= 0 && !waveInProgress) {
-                waveInProgress = true;
-                setTimeout(() => {
-                    round++;
-                    startWave();
-                    waveInProgress = false;
-                }, 2000); // 2 seconds delay before next wave
+                // Check if wave is completed
+                if (enemiesRemaining <= 0 && !waveInProgress) {
+                    waveInProgress = true;
+                    setTimeout(() => {
+                        round++;
+                        startWave();
+                        waveInProgress = false;
+                    }, 2000); // 2 seconds delay before next wave
+                }
             }
-        }
 
-        renderer.render(scene, camera);
+            renderer.render(scene, camera);
+
+            // Update FPS Counter
+            const sinceStart = now - startTime;
+            const currentFps = Math.round(1000 / (sinceStart / (++frameCount)));
+            document.getElementById('fpsCounter').innerText = `FPS: ${currentFps}`;
+        }
     }
+
+    let frameCount = 0;
 
     function createGun() {
         const gunGeometry = new THREE.BoxGeometry(2, 2, 8);
-        const gunMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
+        const gunMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
         gun = new THREE.Mesh(gunGeometry, gunMaterial);
-        scene.add(gun);
+        pitchObject.add(gun);
     }
 
     function updateGunPosition() {
         // Position the gun in front of the camera
-        gun.position.copy(camera.position);
-        gun.rotation.copy(camera.rotation);
-
-        const gunOffset = new THREE.Vector3(0.5, -1, -2);
-        gunOffset.applyQuaternion(camera.quaternion);
-        gun.position.add(gunOffset);
+        gun.position.set(1.5, -2, -5);
+        gun.rotation.set(0, 0, 0);
     }
 
     function startWave() {
@@ -296,7 +374,7 @@
     function spawnEnemy() {
         const enemy = createEnemy();
 
-        const roomLimit = 200;
+        const roomLimit = 400;
         const minDistance = 100; // Minimum distance from player
         let spawnPosition = new THREE.Vector3();
 
@@ -304,9 +382,13 @@
             spawnPosition.x = Math.random() * roomLimit * 2 - roomLimit;
             spawnPosition.z = Math.random() * roomLimit * 2 - roomLimit;
             spawnPosition.y = 0;
-        } while (spawnPosition.distanceTo(camera.position) < minDistance);
+        } while (spawnPosition.distanceTo(yawObject.position) < minDistance);
 
         enemy.position.copy(spawnPosition);
+
+        // Calculate bounding box for the enemy
+        const box = new THREE.Box3().setFromObject(enemy);
+        enemy.userData.boundingBox = box;
 
         enemies.push(enemy);
         scene.add(enemy);
@@ -317,23 +399,26 @@
     function createEnemy() {
         const enemy = new THREE.Group();
 
+        // Scale down the enemy to be proportional
+        enemy.scale.set(0.5, 0.5, 0.5);
+
         // Torso
         const torsoGeometry = new THREE.BoxGeometry(10, 15, 5);
-        const torsoMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const torsoMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
         const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
         torso.position.y = 15;
         enemy.add(torso);
 
         // Head
         const headGeometry = new THREE.BoxGeometry(8, 8, 8);
-        const headMaterial = new THREE.MeshBasicMaterial({ color: 0xffcccc });
+        const headMaterial = new THREE.MeshStandardMaterial({ color: 0xffcccc });
         const head = new THREE.Mesh(headGeometry, headMaterial);
         head.position.y = 28;
         enemy.add(head);
 
         // Arms
         const armGeometry = new THREE.BoxGeometry(3, 15, 3);
-        const armMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const armMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
         const leftArm = new THREE.Mesh(armGeometry, armMaterial);
         leftArm.position.set(-7, 15, 0);
         const rightArm = new THREE.Mesh(armGeometry, armMaterial);
@@ -343,13 +428,21 @@
 
         // Legs
         const legGeometry = new THREE.BoxGeometry(4, 15, 4);
-        const legMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+        const legMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
         const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
         leftLeg.position.set(-3, 0, 0);
         const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
         rightLeg.position.set(3, 0, 0);
         enemy.add(leftLeg);
         enemy.add(rightLeg);
+
+        // Shadows
+        enemy.traverse(function (child) {
+            if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+            }
+        });
 
         return enemy;
     }
@@ -358,11 +451,19 @@
         for (let i = enemies.length - 1; i >= 0; i--) {
             const enemy = enemies[i];
             const direction = new THREE.Vector3();
-            direction.subVectors(camera.position, enemy.position).normalize();
-            enemy.position.add(direction.multiplyScalar(20 * delta));
+            direction.subVectors(yawObject.position, enemy.position).normalize();
+            enemy.position.add(direction.multiplyScalar(50 * delta));
+
+            // Update bounding box position
+            enemy.userData.boundingBox.setFromObject(enemy);
+
+            // Rotate enemy to face the player
+            const enemyDir = new THREE.Vector3();
+            enemyDir.subVectors(yawObject.position, enemy.position);
+            enemy.rotation.y = Math.atan2(enemyDir.x, enemyDir.z);
 
             // Simple collision detection with player
-            if (enemy.position.distanceTo(camera.position) < 10) {
+            if (enemy.position.distanceTo(yawObject.position) < 10) {
                 alert('Game Over!');
                 window.location.reload();
             }
@@ -370,18 +471,21 @@
     }
 
     function shoot() {
+        if (bullets.length > 50) return; // Limit the number of active bullets
+
         const bulletGeometry = new THREE.SphereGeometry(1, 8, 8);
-        const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        const bulletMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
         const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
 
-        // Start bullet from gun's tip
-        const bulletPosition = new THREE.Vector3(0, -1, -4); // Slightly in front of the gun
-        bulletPosition.applyQuaternion(camera.quaternion);
-        bullet.position.copy(camera.position).add(bulletPosition);
+        // Start bullet from the gun's tip
+        const bulletPosition = new THREE.Vector3();
+        bulletPosition.setFromMatrixPosition(gun.matrixWorld);
+        bullet.position.copy(bulletPosition);
 
-        const vector = new THREE.Vector3(0, 0, -1);
-        vector.applyQuaternion(camera.quaternion);
-        bullet.userData.velocity = vector.clone().multiplyScalar(500);
+        // Get the direction the camera is facing
+        const direction = new THREE.Vector3();
+        camera.getWorldDirection(direction);
+        bullet.userData.velocity = direction.clone().multiplyScalar(500);
 
         bullets.push(bullet);
         scene.add(bullet);
@@ -393,7 +497,7 @@
             bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(delta));
 
             // Remove bullet if it's too far
-            if (bullet.position.distanceTo(camera.position) > 1000) {
+            if (bullet.position.distanceTo(yawObject.position) > 1000) {
                 scene.remove(bullet);
                 bullets.splice(i, 1);
                 continue;
@@ -402,7 +506,10 @@
             // Check for collision with enemies
             for (let j = enemies.length - 1; j >= 0; j--) {
                 const enemy = enemies[j];
-                if (bullet.position.distanceTo(enemy.position) < 5) {
+
+                // Check collision using bounding boxes
+                const bulletBox = new THREE.Box3().setFromObject(bullet);
+                if (bulletBox.intersectsBox(enemy.userData.boundingBox)) {
                     scene.remove(enemy);
                     enemies.splice(j, 1);
                     enemiesRemaining--;
