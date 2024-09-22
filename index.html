@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>3D FPS Game</title>
+    <title>3D FPS Game with Minimap</title>
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
@@ -19,10 +19,11 @@
             position: absolute;
             width: 200px;
             color: #ffffff;
-            top: 10px;
-            left: 10px;
+            bottom: 10px;
+            right: 10px;
             font-family: Arial, sans-serif;
             z-index: 1;
+            text-align: right;
         }
         #fpsCounter {
             position: absolute;
@@ -62,14 +63,42 @@
             width: 20px;
             height: 2px;
         }
+        /* Styles for the message display */
+        #message {
+            position: absolute;
+            width: 100%;
+            color: #ffffff;
+            text-align: center;
+            top: 50px;
+            font-family: Arial, sans-serif;
+            z-index: 1;
+            font-size: 24px;
+            text-shadow: 1px 1px 2px #000;
+            display: none;
+        }
+        /* Styles for the minimap */
+        #minimap {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 200px; /* Initial small size */
+            height: 200px;
+            border: 2px solid #ffffff;
+            z-index: 1;
+            overflow: hidden;
+        }
     </style>
 </head>
 <body>
 
-<div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot.</div>
+<div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot. Press 'M' to toggle minimap size.</div>
 <div id="scoreboard">Round: 1<br>Enemies Remaining: 0</div>
 <div id="fpsCounter">FPS: 0</div>
 <div id="crosshair"></div>
+<!-- Message div for notifications -->
+<div id="message"></div>
+<!-- Canvas for the minimap -->
+<canvas id="minimap"></canvas>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
@@ -94,14 +123,20 @@
     let waveInProgress = false;
 
     // Movement variables
-    const moveSpeed = 200.0;
-    const lookSpeed = 0.002;
+    const moveSpeed = 400.0; // Increased move speed
+    const lookSpeed = 0.003; // Increased look speed
 
     // Mouse controls
     let pitchObject, yawObject;
 
     // FPS Counter
     let fpsInterval, startTime, now, then, elapsed;
+
+    // Minimap
+    let minimapCamera, minimapRenderer;
+    let minimapSize = { width: 200, height: 200 };
+    let minimapScale = 0.1; // Scale down the minimap scene
+    let isMinimapExpanded = false;
 
     // Initialize the scene
     init();
@@ -110,7 +145,7 @@
     function init() {
         // Scene and Camera
         scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x808080); // Grey background
+        scene.background = new THREE.Color(0x87ceeb); // Sky blue background
 
         camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 2000);
 
@@ -124,17 +159,17 @@
         scene.add(yawObject);
 
         // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Ambient light
         scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        directionalLight.position.set(0, 50, 0);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(100, 200, 100);
         scene.add(directionalLight);
 
         // Floor
-        const floorSize = 1000;
+        const floorSize = 2000;
         const floorGeometry = new THREE.PlaneGeometry(floorSize, floorSize);
-        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
+        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // Forest green floor
         const floor = new THREE.Mesh(floorGeometry, floorMaterial);
         floor.rotation.x = -Math.PI / 2;
         scene.add(floor);
@@ -142,10 +177,34 @@
         // Walls
         createWalls(floorSize);
 
+        // Obstacles
+        createLevel();
+
         // Renderer
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
+
+        // Minimap Renderer
+        minimapRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        minimapRenderer.setSize(minimapSize.width, minimapSize.height);
+        minimapRenderer.domElement.style.position = 'absolute';
+        minimapRenderer.domElement.style.top = '10px';
+        minimapRenderer.domElement.style.left = '10px';
+        minimapRenderer.domElement.style.border = '2px solid #ffffff';
+        document.body.appendChild(minimapRenderer.domElement);
+
+        // Minimap Camera
+        minimapCamera = new THREE.OrthographicCamera(
+            window.innerWidth / -2,
+            window.innerWidth / 2,
+            window.innerHeight / 2,
+            window.innerHeight / -2,
+            0.1,
+            1000
+        );
+        minimapCamera.rotation.order = 'YXZ';
 
         // Controls
         document.addEventListener('click', function () {
@@ -198,6 +257,9 @@
                 case 'KeyD':
                     moveRight = true;
                     break;
+                case 'KeyM':
+                    toggleMinimap();
+                    break;
             }
         };
 
@@ -245,9 +307,29 @@
         window.addEventListener('resize', onWindowResize, false);
     }
 
+    function toggleMinimap() {
+        if (isMinimapExpanded) {
+            // Shrink minimap
+            minimapRenderer.setSize(200, 200);
+            minimapRenderer.domElement.style.width = '200px';
+            minimapRenderer.domElement.style.height = '200px';
+            minimapRenderer.domElement.style.border = '2px solid #ffffff';
+            isMinimapExpanded = false;
+            minimapScale = 0.1;
+        } else {
+            // Expand minimap
+            minimapRenderer.setSize(400, 400);
+            minimapRenderer.domElement.style.width = '400px';
+            minimapRenderer.domElement.style.height = '400px';
+            minimapRenderer.domElement.style.border = '4px solid #ffffff';
+            isMinimapExpanded = true;
+            minimapScale = 0.05;
+        }
+    }
+
     function createWalls(size) {
         const wallHeight = 50;
-        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // Brown walls
 
         const positions = [
             { x: 0, y: wallHeight / 2, z: -size / 2 }, // Back wall
@@ -272,10 +354,134 @@
         }
     }
 
+    function createLevel() {
+        // Create a simple maze-like level
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xD2B48C }); // Tan color
+        const wallThickness = 20;
+        const wallHeight = 30;
+
+        const levelLayout = [
+            // Vertical walls
+            { x: -400, y: wallHeight / 2, z: 0, width: wallThickness, depth: 800 },
+            { x: 400, y: wallHeight / 2, z: 0, width: wallThickness, depth: 800 },
+            // Horizontal walls
+            { x: 0, y: wallHeight / 2, z: -400, width: 800, depth: wallThickness },
+            { x: 0, y: wallHeight / 2, z: 400, width: 800, depth: wallThickness },
+            // Inner obstacles
+            { x: -200, y: wallHeight / 2, z: -200, width: 400, depth: wallThickness },
+            { x: 200, y: wallHeight / 2, z: 200, width: 400, depth: wallThickness },
+            { x: -200, y: wallHeight / 2, z: 0, width: wallThickness, depth: 400 },
+            { x: 200, y: wallHeight / 2, z: 0, width: wallThickness, depth: 400 },
+        ];
+
+        for (let wallData of levelLayout) {
+            const wallGeometry = new THREE.BoxGeometry(wallData.width, wallHeight, wallData.depth);
+            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+            wall.position.set(wallData.x, wallData.y, wallData.z);
+            scene.add(wall);
+        }
+
+        // Place some obstacles like tables and chairs
+        const obstaclePositions = [
+            { x: -300, z: -300 },
+            { x: 300, z: -300 },
+            { x: -300, z: 300 },
+            { x: 300, z: 300 },
+            { x: 0, z: 0 },
+            { x: -150, z: 150 },
+            { x: 150, z: -150 },
+        ];
+
+        for (let pos of obstaclePositions) {
+            const table = createTable();
+            table.position.set(pos.x, 0, pos.z);
+            scene.add(table);
+
+            const chair = createChair();
+            chair.position.set(pos.x + 30, 0, pos.z);
+            scene.add(chair);
+        }
+    }
+
+    function createTable() {
+        const scaleFactor = 0.5; // Make the table smaller
+        const table = new THREE.Group();
+
+        const tabletopGeometry = new THREE.BoxGeometry(20, 2, 10);
+        const tabletopMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const tabletop = new THREE.Mesh(tabletopGeometry, tabletopMaterial);
+        tabletop.position.y = 10 * scaleFactor;
+        tabletop.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        table.add(tabletop);
+
+        const legGeometry = new THREE.BoxGeometry(2, 10, 2);
+        const legMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+
+        const positions = [
+            { x: -8 * scaleFactor, z: -4 * scaleFactor },
+            { x: 8 * scaleFactor, z: -4 * scaleFactor },
+            { x: -8 * scaleFactor, z: 4 * scaleFactor },
+            { x: 8 * scaleFactor, z: 4 * scaleFactor },
+        ];
+
+        for (let pos of positions) {
+            const leg = new THREE.Mesh(legGeometry, legMaterial);
+            leg.position.set(pos.x, 5 * scaleFactor, pos.z);
+            leg.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            table.add(leg);
+        }
+
+        return table;
+    }
+
+    function createChair() {
+        const scaleFactor = 0.5; // Make the chair smaller
+        const chair = new THREE.Group();
+
+        const seatGeometry = new THREE.BoxGeometry(10, 2, 10);
+        const seatMaterial = new THREE.MeshStandardMaterial({ color: 0xA0522D });
+        const seat = new THREE.Mesh(seatGeometry, seatMaterial);
+        seat.position.y = 5 * scaleFactor;
+        seat.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        chair.add(seat);
+
+        const backGeometry = new THREE.BoxGeometry(10, 15, 2);
+        const back = new THREE.Mesh(backGeometry, seatMaterial);
+        back.position.set(0, 12.5 * scaleFactor, -4 * scaleFactor);
+        back.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        chair.add(back);
+
+        const legGeometry = new THREE.BoxGeometry(2, 5, 2);
+        const legMaterial = new THREE.MeshStandardMaterial({ color: 0xA0522D });
+
+        const positions = [
+            { x: -4 * scaleFactor, z: -4 * scaleFactor },
+            { x: 4 * scaleFactor, z: -4 * scaleFactor },
+            { x: -4 * scaleFactor, z: 4 * scaleFactor },
+            { x: 4 * scaleFactor, z: 4 * scaleFactor },
+        ];
+
+        for (let pos of positions) {
+            const leg = new THREE.Mesh(legGeometry, legMaterial);
+            leg.position.set(pos.x, 2.5 * scaleFactor, pos.z);
+            leg.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            chair.add(leg);
+        }
+
+        return chair;
+    }
+
     function onWindowResize() {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // Update minimap camera
+        if (isMinimapExpanded) {
+            minimapRenderer.setSize(400, 400);
+        } else {
+            minimapRenderer.setSize(200, 200);
+        }
     }
 
     function startAnimating(fps) {
@@ -297,11 +503,12 @@
             if (controlsEnabled) {
                 const delta = (now - prevTime) / 1000;
 
-                velocity.x -= velocity.x * 10.0 * delta;
-                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.x -= velocity.x * 8.0 * delta; // Reduced damping for smoother movement
+                velocity.z -= velocity.z * 8.0 * delta;
 
+                // Corrected direction calculation
                 direction.z = Number(moveForward) - Number(moveBackward);
-                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.x = Number(moveLeft) - Number(moveRight);
                 direction.normalize();
 
                 if (moveForward || moveBackward) velocity.z -= direction.z * moveSpeed * delta;
@@ -312,7 +519,7 @@
                 yawObject.translateZ(velocity.z * delta);
 
                 // Keep the player inside the room
-                const roomLimit = 480;
+                const roomLimit = 980;
                 yawObject.position.x = THREE.MathUtils.clamp(yawObject.position.x, -roomLimit, roomLimit);
                 yawObject.position.z = THREE.MathUtils.clamp(yawObject.position.z, -roomLimit, roomLimit);
 
@@ -330,6 +537,7 @@
                 // Check if wave is completed
                 if (enemiesRemaining <= 0 && !waveInProgress) {
                     waveInProgress = true;
+                    showMessage(`Round ${round}: Finished`);
                     setTimeout(() => {
                         round++;
                         startWave();
@@ -339,6 +547,9 @@
             }
 
             renderer.render(scene, camera);
+
+            // Update Minimap
+            updateMinimap();
 
             // Update FPS Counter
             const sinceStart = now - startTime;
@@ -369,12 +580,13 @@
             spawnEnemy();
         }
         document.getElementById('scoreboard').innerHTML = `Round: ${round}<br>Enemies Remaining: ${enemiesRemaining}`;
+        showMessage(`Round ${round}: Start`);
     }
 
     function spawnEnemy() {
         const enemy = createEnemy();
 
-        const roomLimit = 400;
+        const roomLimit = 800; // Adjusted for larger arena
         const minDistance = 100; // Minimum distance from player
         let spawnPosition = new THREE.Vector3();
 
@@ -385,6 +597,9 @@
         } while (spawnPosition.distanceTo(yawObject.position) < minDistance);
 
         enemy.position.copy(spawnPosition);
+
+        // Initialize walk time for animations
+        enemy.userData.walkTime = 0;
 
         // Calculate bounding box for the enemy
         const box = new THREE.Box3().setFromObject(enemy);
@@ -399,7 +614,7 @@
     function createEnemy() {
         const enemy = new THREE.Group();
 
-        // Scale down the enemy to be proportional
+        // Increase the size of the enemy
         enemy.scale.set(0.5, 0.5, 0.5);
 
         // Torso
@@ -418,31 +633,25 @@
 
         // Arms
         const armGeometry = new THREE.BoxGeometry(3, 15, 3);
+        armGeometry.translate(0, -7.5, 0); // Adjust pivot to shoulder
         const armMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
         const leftArm = new THREE.Mesh(armGeometry, armMaterial);
-        leftArm.position.set(-7, 15, 0);
+        leftArm.position.set(-7, 22.5, 0); // Positioned at shoulder height
         const rightArm = new THREE.Mesh(armGeometry, armMaterial);
-        rightArm.position.set(7, 15, 0);
+        rightArm.position.set(7, 22.5, 0);
         enemy.add(leftArm);
         enemy.add(rightArm);
 
         // Legs
         const legGeometry = new THREE.BoxGeometry(4, 15, 4);
+        legGeometry.translate(0, -7.5, 0); // Adjust pivot to hip
         const legMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
         const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
-        leftLeg.position.set(-3, 0, 0);
+        leftLeg.position.set(-3, 15, 0); // Positioned at hip height
         const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
-        rightLeg.position.set(3, 0, 0);
+        rightLeg.position.set(3, 15, 0);
         enemy.add(leftLeg);
         enemy.add(rightLeg);
-
-        // Shadows
-        enemy.traverse(function (child) {
-            if (child.isMesh) {
-                child.castShadow = true;
-                child.receiveShadow = true;
-            }
-        });
 
         return enemy;
     }
@@ -450,9 +659,12 @@
     function updateEnemies(delta) {
         for (let i = enemies.length - 1; i >= 0; i--) {
             const enemy = enemies[i];
+
+            // Move towards player
             const direction = new THREE.Vector3();
             direction.subVectors(yawObject.position, enemy.position).normalize();
-            enemy.position.add(direction.multiplyScalar(50 * delta));
+            direction.y = 0; // Ensure enemy moves only in xz plane
+            enemy.position.add(direction.multiplyScalar(30 * delta)); // Adjusted speed
 
             // Update bounding box position
             enemy.userData.boundingBox.setFromObject(enemy);
@@ -464,9 +676,27 @@
 
             // Simple collision detection with player
             if (enemy.position.distanceTo(yawObject.position) < 10) {
-                alert('Game Over!');
-                window.location.reload();
+                showMessage('You Died');
+                controlsEnabled = false;
+                document.exitPointerLock();
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+                return; // Stop updating enemies
             }
+
+            // Update walking animation
+            enemy.userData.walkTime += delta;
+            const walkSpeed = 5;
+            const angle = Math.sin(enemy.userData.walkTime * walkSpeed) * 0.5;
+
+            // Left and right legs are the last two children of enemy group
+            enemy.children[4].rotation.x = angle; // Left leg
+            enemy.children[5].rotation.x = -angle; // Right leg
+
+            // Animate arms
+            enemy.children[2].rotation.x = -angle; // Left arm
+            enemy.children[3].rotation.x = angle; // Right arm
         }
     }
 
@@ -520,6 +750,34 @@
                 }
             }
         }
+    }
+
+    // Function to display messages
+    function showMessage(text) {
+        const messageDiv = document.getElementById('message');
+        messageDiv.innerText = text;
+        messageDiv.style.display = 'block';
+        // Hide message after 3 seconds
+        setTimeout(() => {
+            messageDiv.style.display = 'none';
+        }, 3000);
+    }
+
+    // Function to update the minimap
+    function updateMinimap() {
+        // Position the minimap camera above the player
+        minimapCamera.position.set(yawObject.position.x, 500, yawObject.position.z);
+        minimapCamera.rotation.set(-Math.PI / 2, 0, 0);
+
+        // Adjust the camera's orthographic size
+        minimapCamera.left = -window.innerWidth * minimapScale;
+        minimapCamera.right = window.innerWidth * minimapScale;
+        minimapCamera.top = window.innerHeight * minimapScale;
+        minimapCamera.bottom = -window.innerHeight * minimapScale;
+        minimapCamera.updateProjectionMatrix();
+
+        // Render the scene from the minimap camera
+        minimapRenderer.render(scene, minimapCamera);
     }
 </script>
 
