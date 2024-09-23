@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>3D FPS Maze Game with Increasing Maze Size</title>
+    <title>3D FPS Game</title>
+    <link rel="icon" href="images/favicon.png" type="image/x-icon">
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
@@ -44,6 +45,23 @@
             font-family: Arial, sans-serif;
             z-index: 1;
             text-align: left;
+        }
+        #healthBarContainer {
+            position: absolute;
+            bottom: 50px; /* Just above the power-ups display */
+            left: 10px;
+            width: 300px;
+            height: 25px;
+            background-color: #555;
+            border: 2px solid #fff;
+            z-index: 1;
+            overflow: hidden;
+        }
+        #healthBar {
+            width: 100%;
+            height: 100%;
+            background-color: #0f0; /* Green */
+            transition: width 0.3s ease;
         }
         #crosshair {
             position: absolute;
@@ -112,6 +130,9 @@
 
 <div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot. Press 'M' to toggle minimap.</div>
 <div id="scoreboard">Round: 1<br>Enemies Remaining: 0</div>
+<div id="healthBarContainer">
+    <div id="healthBar"></div>
+</div>
 <div id="powerUpsDisplay"></div>
 <div id="fpsCounter">FPS: 0</div>
 <div id="crosshair"></div>
@@ -135,6 +156,7 @@
     let raycaster;
     const bullets = [];
     let gun;
+    let playerHealth = 100; // Initialize player health
 
     // Enemy and Wave Management
     const enemies = [];
@@ -349,6 +371,9 @@
 
         // Window resize
         window.addEventListener('resize', onWindowResize, false);
+
+        // Initialize health bar
+        updateHealthBar();
     }
 
     function toggleMinimap() {
@@ -383,7 +408,7 @@
         maze = [];
 
         // Calculate maze size based on the level
-        mazeSize = initialMazeSize + (round - 1) * mazeSizeIncrement;
+        mazeSize = initialMazeSize + Math.floor((round - 1) / 2) * mazeSizeIncrement;
 
         // Ensure mazeSize is odd
         if (mazeSize % 2 === 0) {
@@ -704,6 +729,9 @@
         // Initialize walk time for animations
         enemy.userData.walkTime = 0;
 
+        // Initialize attack cooldown
+        enemy.userData.lastAttackTime = 0;
+
         // Calculate bounding box for the enemy
         const box = new THREE.Box3().setFromObject(enemy);
         enemy.userData.boundingBox = box;
@@ -785,13 +813,27 @@
 
             // Simple collision detection with player
             if (enemy.position.distanceTo(yawObject.position) < 10) {
-                showMessage('You Died');
-                controlsEnabled = false;
-                document.exitPointerLock();
-                setTimeout(() => {
-                    window.location.reload();
-                }, 3000);
-                return; // Stop updating enemies
+                // Enemy is close enough to attack
+                if (!enemy.userData.lastAttackTime || now - enemy.userData.lastAttackTime > 1000) {
+                    // Enemy can attack
+                    playerHealth -= 20;
+                    updateHealthBar();
+                    enemy.userData.lastAttackTime = now; // Record last attack time
+
+                    // Show attack animation (optional)
+                    // You can add code here to animate the enemy's arms punching
+
+                    // Check if player is dead
+                    if (playerHealth <= 0) {
+                        showMessage('You Died');
+                        controlsEnabled = false;
+                        document.exitPointerLock();
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 3000);
+                        return; // Stop updating enemies
+                    }
+                }
             }
 
             // Update walking animation
@@ -1216,6 +1258,21 @@
             html += `<span style="color: #${type.color.toString(16)}">${type.name}: ${timeLeft}s</span><br>`;
         }
         display.innerHTML = html;
+    }
+
+    // Function to update health bar
+    function updateHealthBar() {
+        const healthBar = document.getElementById('healthBar');
+        healthBar.style.width = playerHealth + '%';
+
+        // Change color based on health
+        if (playerHealth > 60) {
+            healthBar.style.backgroundColor = '#0f0'; // Green
+        } else if (playerHealth > 30) {
+            healthBar.style.backgroundColor = '#ff0'; // Yellow
+        } else {
+            healthBar.style.backgroundColor = '#f00'; // Red
+        }
     }
 
     // Function to display messages
