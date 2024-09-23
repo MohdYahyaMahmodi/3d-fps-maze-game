@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>3D FPS Game with Minimap</title>
+    <title>3D FPS Maze Game with Increasing Maze Size</title>
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
@@ -35,6 +35,16 @@
             z-index: 1;
             text-align: right;
         }
+        #powerUpsDisplay {
+            position: absolute;
+            width: 300px;
+            color: #ffffff;
+            bottom: 10px;
+            left: 10px;
+            font-family: Arial, sans-serif;
+            z-index: 1;
+            text-align: left;
+        }
         #crosshair {
             position: absolute;
             top: 50%;
@@ -63,7 +73,6 @@
             width: 20px;
             height: 2px;
         }
-        /* Styles for the message display */
         #message {
             position: absolute;
             width: 100%;
@@ -76,29 +85,40 @@
             text-shadow: 1px 1px 2px #000;
             display: none;
         }
-        /* Styles for the minimap */
-        #minimap {
+        /* Black overlay for level transitions */
+        #blackOverlay {
             position: absolute;
-            top: 10px;
-            left: 10px;
-            width: 200px; /* Initial small size */
-            height: 200px;
-            border: 2px solid #ffffff;
-            z-index: 1;
-            overflow: hidden;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000000;
+            z-index: 10;
+            display: none;
+        }
+        #loadingText {
+            position: absolute;
+            width: 100%;
+            color: #ffffff;
+            text-align: center;
+            top: 50%;
+            transform: translateY(-50%);
+            font-family: Arial, sans-serif;
+            font-size: 36px;
         }
     </style>
 </head>
 <body>
 
-<div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot. Press 'M' to toggle minimap size.</div>
+<div id="info">Click to play. Use W/A/S/D to move, mouse to look, and left-click to shoot. Press 'M' to toggle minimap.</div>
 <div id="scoreboard">Round: 1<br>Enemies Remaining: 0</div>
+<div id="powerUpsDisplay"></div>
 <div id="fpsCounter">FPS: 0</div>
 <div id="crosshair"></div>
-<!-- Message div for notifications -->
 <div id="message"></div>
-<!-- Canvas for the minimap -->
-<canvas id="minimap"></canvas>
+<div id="blackOverlay">
+    <div id="loadingText">Loading next level...</div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
@@ -123,20 +143,57 @@
     let waveInProgress = false;
 
     // Movement variables
-    const moveSpeed = 400.0; // Increased move speed
-    const lookSpeed = 0.003; // Increased look speed
+    const moveSpeed = 400.0;
+    const lookSpeed = 0.003;
 
     // Mouse controls
     let pitchObject, yawObject;
 
     // FPS Counter
-    let fpsInterval, startTime, now, then, elapsed;
+    let fpsInterval, now, then, elapsed;
 
     // Minimap
-    let minimapCamera, minimapRenderer;
-    let minimapSize = { width: 200, height: 200 };
-    let minimapScale = 0.1; // Scale down the minimap scene
+    let minimapCamera, minimapRenderer, minimapScene;
+    let minimapScale = 0.05;
     let isMinimapExpanded = false;
+    let playerMarker;
+
+    // Collision and Maze
+    const collidableMeshList = [];
+    let maze;
+    let mazeSize; // Will be initialized based on level
+    const cellSize = 40;
+
+    // Maze size configuration
+    const initialMazeSize = 15; // Starting maze size (must be odd)
+    const mazeSizeIncrement = 4; // Increase maze size by 4 each level to keep it odd
+
+    // Pathfinding
+    let grid = [];
+
+    // Minimap walls
+    const minimapWalls = [];
+
+    // Power-ups
+    const powerUps = [];
+    const activePowerUps = {};
+    const powerUpTypes = [
+        {
+            name: 'Walk Through Walls',
+            color: 0x0000ff, // Blue
+            duration: 30,
+            effect: 'walkThroughWalls',
+        },
+        {
+            name: 'Fast Shooting',
+            color: 0xff0000, // Red
+            duration: 30,
+            effect: 'fastShooting',
+        }
+    ];
+
+    // Floor
+    let floor, floorSize, floorGeometry, floorMaterial;
 
     // Initialize the scene
     init();
@@ -147,64 +204,47 @@
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87ceeb); // Sky blue background
 
-        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 2000);
+        // Minimap Scene
+        minimapScene = new THREE.Scene();
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 5000);
 
         // Create a pitch and yaw object for the camera
         pitchObject = new THREE.Object3D();
         pitchObject.add(camera);
 
         yawObject = new THREE.Object3D();
-        yawObject.position.y = 10; // Player height
+        yawObject.position.y = 20; // Player height
         yawObject.add(pitchObject);
         scene.add(yawObject);
 
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Ambient light
-        scene.add(ambientLight);
-
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
-        directionalLight.position.set(100, 200, 100);
-        scene.add(directionalLight);
-
-        // Floor
-        const floorSize = 2000;
-        const floorGeometry = new THREE.PlaneGeometry(floorSize, floorSize);
-        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // Forest green floor
-        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-        floor.rotation.x = -Math.PI / 2;
-        scene.add(floor);
-
-        // Walls
-        createWalls(floorSize);
-
-        // Obstacles
-        createLevel();
-
         // Renderer
-        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer = new THREE.WebGLRenderer({ antialias: false }); // Disabled antialiasing
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.enabled = false; // Disabled shadows
         document.body.appendChild(renderer.domElement);
 
         // Minimap Renderer
-        minimapRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        minimapRenderer.setSize(minimapSize.width, minimapSize.height);
+        minimapRenderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }); // Disabled antialiasing
+        minimapRenderer.setSize(200, 200);
+        minimapRenderer.shadowMap.enabled = false; // Disabled shadows
         minimapRenderer.domElement.style.position = 'absolute';
         minimapRenderer.domElement.style.top = '10px';
         minimapRenderer.domElement.style.left = '10px';
         minimapRenderer.domElement.style.border = '2px solid #ffffff';
+        minimapRenderer.domElement.style.zIndex = '1';
         document.body.appendChild(minimapRenderer.domElement);
 
         // Minimap Camera
-        minimapCamera = new THREE.OrthographicCamera(
-            window.innerWidth / -2,
-            window.innerWidth / 2,
-            window.innerHeight / 2,
-            window.innerHeight / -2,
-            0.1,
-            1000
-        );
+        minimapCamera = new THREE.OrthographicCamera(-window.innerWidth, window.innerWidth, window.innerHeight, -window.innerHeight, 0.1, 5000);
         minimapCamera.rotation.order = 'YXZ';
+
+        // Player Marker
+        const playerMarkerGeometry = new THREE.CircleGeometry(5, 6); // Reduced segments
+        const playerMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        playerMarker = new THREE.Mesh(playerMarkerGeometry, playerMarkerMaterial);
+        playerMarker.rotation.x = -Math.PI / 2; // Face upwards
+        minimapScene.add(playerMarker);
 
         // Controls
         document.addEventListener('click', function () {
@@ -300,6 +340,10 @@
         // Player's Gun
         createGun();
 
+        // Generate the maze and create the maze geometry
+        generateMaze();
+        createMaze();
+
         // Start the first wave
         startWave();
 
@@ -314,161 +358,157 @@
             minimapRenderer.domElement.style.width = '200px';
             minimapRenderer.domElement.style.height = '200px';
             minimapRenderer.domElement.style.border = '2px solid #ffffff';
+            minimapRenderer.domElement.style.left = '10px';
+            minimapRenderer.domElement.style.top = '10px';
+            minimapRenderer.domElement.style.transform = 'none';
+            minimapRenderer.domElement.style.zIndex = '1';
             isMinimapExpanded = false;
-            minimapScale = 0.1;
+            minimapScale = 0.05; // Adjusted minimap scale
         } else {
             // Expand minimap
-            minimapRenderer.setSize(400, 400);
-            minimapRenderer.domElement.style.width = '400px';
-            minimapRenderer.domElement.style.height = '400px';
+            minimapRenderer.setSize(600, 600);
+            minimapRenderer.domElement.style.width = '600px';
+            minimapRenderer.domElement.style.height = '600px';
             minimapRenderer.domElement.style.border = '4px solid #ffffff';
+            minimapRenderer.domElement.style.left = '50%';
+            minimapRenderer.domElement.style.top = '50%';
+            minimapRenderer.domElement.style.transform = 'translate(-50%, -50%)';
+            minimapRenderer.domElement.style.zIndex = '2';
             isMinimapExpanded = true;
-            minimapScale = 0.05;
+            minimapScale = 1.0; // Show full arena
         }
     }
 
-    function createWalls(size) {
-        const wallHeight = 50;
-        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 }); // Brown walls
+    function generateMaze() {
+        maze = [];
 
-        const positions = [
-            { x: 0, y: wallHeight / 2, z: -size / 2 }, // Back wall
-            { x: 0, y: wallHeight / 2, z: size / 2 },  // Front wall
-            { x: -size / 2, y: wallHeight / 2, z: 0 }, // Left wall
-            { x: size / 2, y: wallHeight / 2, z: 0 },  // Right wall
-        ];
+        // Calculate maze size based on the level
+        mazeSize = initialMazeSize + (round - 1) * mazeSizeIncrement;
 
-        const rotations = [
-            { x: 0, y: 0, z: 0 },
-            { x: 0, y: Math.PI, z: 0 },
-            { x: 0, y: -Math.PI / 2, z: 0 },
-            { x: 0, y: Math.PI / 2, z: 0 },
-        ];
+        // Ensure mazeSize is odd
+        if (mazeSize % 2 === 0) {
+            mazeSize += 1;
+        }
 
-        for (let i = 0; i < 4; i++) {
-            const wallGeometry = new THREE.PlaneGeometry(size, wallHeight);
-            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-            wall.position.set(positions[i].x, positions[i].y, positions[i].z);
-            wall.rotation.set(rotations[i].x, rotations[i].y, rotations[i].z);
-            scene.add(wall);
+        // Generate the maze
+        for (let x = 0; x < mazeSize; x++) {
+            maze[x] = [];
+            for (let y = 0; y < mazeSize; y++) {
+                maze[x][y] = 1; // Wall
+            }
+        }
+
+        const stack = [];
+        const startX = 1;
+        const startY = 1;
+
+        maze[startX][startY] = 0; // Path
+        stack.push({ x: startX, y: startY });
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            const neighbors = [];
+
+            const directions = [
+                { x: 0, y: -2 }, // Up
+                { x: 2, y: 0 },  // Right
+                { x: 0, y: 2 },  // Down
+                { x: -2, y: 0 }  // Left
+            ];
+
+            for (let i = 0; i < directions.length; i++) {
+                const nx = current.x + directions[i].x;
+                const ny = current.y + directions[i].y;
+
+                if (nx > 0 && nx < mazeSize - 1 && ny > 0 && ny < mazeSize - 1) {
+                    if (maze[nx][ny] === 1) {
+                        neighbors.push({ x: nx, y: ny });
+                    }
+                }
+            }
+
+            if (neighbors.length > 0) {
+                stack.push(current);
+
+                const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+
+                maze[(current.x + next.x) / 2][(current.y + next.y) / 2] = 0;
+                maze[next.x][next.y] = 0;
+
+                stack.push(next);
+            }
         }
     }
 
-    function createLevel() {
-        // Create a simple maze-like level
-        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xD2B48C }); // Tan color
-        const wallThickness = 20;
-        const wallHeight = 30;
+    function createMaze() {
+        const wallMaterial = new THREE.MeshBasicMaterial({ color: 0xD2B48C }); // Tan color
+        const wallHeight = 40;
 
-        const levelLayout = [
-            // Vertical walls
-            { x: -400, y: wallHeight / 2, z: 0, width: wallThickness, depth: 800 },
-            { x: 400, y: wallHeight / 2, z: 0, width: wallThickness, depth: 800 },
-            // Horizontal walls
-            { x: 0, y: wallHeight / 2, z: -400, width: 800, depth: wallThickness },
-            { x: 0, y: wallHeight / 2, z: 400, width: 800, depth: wallThickness },
-            // Inner obstacles
-            { x: -200, y: wallHeight / 2, z: -200, width: 400, depth: wallThickness },
-            { x: 200, y: wallHeight / 2, z: 200, width: 400, depth: wallThickness },
-            { x: -200, y: wallHeight / 2, z: 0, width: wallThickness, depth: 400 },
-            { x: 200, y: wallHeight / 2, z: 0, width: wallThickness, depth: 400 },
-        ];
+        // Initialize grid as a 2D array
+        grid = [];
+        for (let x = 0; x < mazeSize; x++) {
+            grid[x] = [];
+            for (let y = 0; y < mazeSize; y++) {
+                if (maze[x][y] === 1) {
+                    const wallGeometry = new THREE.BoxGeometry(cellSize, wallHeight, cellSize);
+                    const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                    wall.position.set(
+                        x * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2,
+                        wallHeight / 2,
+                        y * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2
+                    );
+                    scene.add(wall);
 
-        for (let wallData of levelLayout) {
-            const wallGeometry = new THREE.BoxGeometry(wallData.width, wallHeight, wallData.depth);
-            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-            wall.position.set(wallData.x, wallData.y, wallData.z);
-            scene.add(wall);
+                    // Add to minimap
+                    const wallClone = wall.clone();
+                    wallClone.material = new THREE.MeshBasicMaterial({ color: 0xD2B48C }); // Tan color
+                    minimapScene.add(wallClone);
+                    minimapWalls.push(wallClone);
+
+                    // Add wall to collision list
+                    collidableMeshList.push(wall);
+                }
+
+                // Prepare grid for pathfinding
+                grid[x][y] = {
+                    x: x,
+                    y: y,
+                    walkable: maze[x][y] === 0,
+                    f: 0,
+                    g: 0,
+                    h: 0,
+                    parent: null,
+                    closed: false,
+                    visited: false
+                };
+            }
         }
 
-        // Place some obstacles like tables and chairs
-        const obstaclePositions = [
-            { x: -300, z: -300 },
-            { x: 300, z: -300 },
-            { x: -300, z: 300 },
-            { x: 300, z: 300 },
-            { x: 0, z: 0 },
-            { x: -150, z: 150 },
-            { x: 150, z: -150 },
-        ];
-
-        for (let pos of obstaclePositions) {
-            const table = createTable();
-            table.position.set(pos.x, 0, pos.z);
-            scene.add(table);
-
-            const chair = createChair();
-            chair.position.set(pos.x + 30, 0, pos.z);
-            scene.add(chair);
-        }
-    }
-
-    function createTable() {
-        const scaleFactor = 0.5; // Make the table smaller
-        const table = new THREE.Group();
-
-        const tabletopGeometry = new THREE.BoxGeometry(20, 2, 10);
-        const tabletopMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
-        const tabletop = new THREE.Mesh(tabletopGeometry, tabletopMaterial);
-        tabletop.position.y = 10 * scaleFactor;
-        tabletop.scale.set(scaleFactor, scaleFactor, scaleFactor);
-        table.add(tabletop);
-
-        const legGeometry = new THREE.BoxGeometry(2, 10, 2);
-        const legMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
-
-        const positions = [
-            { x: -8 * scaleFactor, z: -4 * scaleFactor },
-            { x: 8 * scaleFactor, z: -4 * scaleFactor },
-            { x: -8 * scaleFactor, z: 4 * scaleFactor },
-            { x: 8 * scaleFactor, z: 4 * scaleFactor },
-        ];
-
-        for (let pos of positions) {
-            const leg = new THREE.Mesh(legGeometry, legMaterial);
-            leg.position.set(pos.x, 5 * scaleFactor, pos.z);
-            leg.scale.set(scaleFactor, scaleFactor, scaleFactor);
-            table.add(leg);
+        // Create or update the floor
+        if (floor) {
+            scene.remove(floor);
+            minimapScene.remove(floor.minimapClone);
         }
 
-        return table;
-    }
+        floorSize = mazeSize * cellSize;
+        floorGeometry = new THREE.PlaneGeometry(floorSize, floorSize);
+        floorMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22 }); // Forest green floor
+        floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
 
-    function createChair() {
-        const scaleFactor = 0.5; // Make the chair smaller
-        const chair = new THREE.Group();
+        // Add floor to minimap
+        const floorClone = floor.clone();
+        floorClone.material = new THREE.MeshBasicMaterial({ color: 0x228B22 }); // Use MeshBasicMaterial
+        minimapScene.add(floorClone);
+        floor.minimapClone = floorClone;
 
-        const seatGeometry = new THREE.BoxGeometry(10, 2, 10);
-        const seatMaterial = new THREE.MeshStandardMaterial({ color: 0xA0522D });
-        const seat = new THREE.Mesh(seatGeometry, seatMaterial);
-        seat.position.y = 5 * scaleFactor;
-        seat.scale.set(scaleFactor, scaleFactor, scaleFactor);
-        chair.add(seat);
-
-        const backGeometry = new THREE.BoxGeometry(10, 15, 2);
-        const back = new THREE.Mesh(backGeometry, seatMaterial);
-        back.position.set(0, 12.5 * scaleFactor, -4 * scaleFactor);
-        back.scale.set(scaleFactor, scaleFactor, scaleFactor);
-        chair.add(back);
-
-        const legGeometry = new THREE.BoxGeometry(2, 5, 2);
-        const legMaterial = new THREE.MeshStandardMaterial({ color: 0xA0522D });
-
-        const positions = [
-            { x: -4 * scaleFactor, z: -4 * scaleFactor },
-            { x: 4 * scaleFactor, z: -4 * scaleFactor },
-            { x: -4 * scaleFactor, z: 4 * scaleFactor },
-            { x: 4 * scaleFactor, z: 4 * scaleFactor },
-        ];
-
-        for (let pos of positions) {
-            const leg = new THREE.Mesh(legGeometry, legMaterial);
-            leg.position.set(pos.x, 2.5 * scaleFactor, pos.z);
-            leg.scale.set(scaleFactor, scaleFactor, scaleFactor);
-            chair.add(leg);
-        }
-
-        return chair;
+        // Set player starting position
+        yawObject.position.set(
+            1 * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2,
+            yawObject.position.y,
+            1 * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2
+        );
     }
 
     function onWindowResize() {
@@ -476,9 +516,9 @@
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
 
-        // Update minimap camera
+        // Update minimap renderer size
         if (isMinimapExpanded) {
-            minimapRenderer.setSize(400, 400);
+            minimapRenderer.setSize(600, 600);
         } else {
             minimapRenderer.setSize(200, 200);
         }
@@ -487,7 +527,6 @@
     function startAnimating(fps) {
         fpsInterval = 1000 / fps;
         then = performance.now();
-        startTime = then;
         animate();
     }
 
@@ -514,14 +553,8 @@
                 if (moveForward || moveBackward) velocity.z -= direction.z * moveSpeed * delta;
                 if (moveLeft || moveRight) velocity.x -= direction.x * moveSpeed * delta;
 
-                // Move the player
-                yawObject.translateX(velocity.x * delta);
-                yawObject.translateZ(velocity.z * delta);
-
-                // Keep the player inside the room
-                const roomLimit = 980;
-                yawObject.position.x = THREE.MathUtils.clamp(yawObject.position.x, -roomLimit, roomLimit);
-                yawObject.position.z = THREE.MathUtils.clamp(yawObject.position.z, -roomLimit, roomLimit);
+                // Move the player with collision detection
+                movePlayer(delta);
 
                 prevTime = now;
 
@@ -534,13 +567,19 @@
                 // Update bullets
                 updateBullets(delta);
 
+                // Update power-ups
+                updatePowerUps(delta);
+
                 // Check if wave is completed
                 if (enemiesRemaining <= 0 && !waveInProgress) {
                     waveInProgress = true;
                     showMessage(`Round ${round}: Finished`);
+                    showBlackOverlay(); // Show black overlay
                     setTimeout(() => {
                         round++;
+                        regenerateMaze();
                         startWave();
+                        hideBlackOverlay(); // Hide black overlay
                         waveInProgress = false;
                     }, 2000); // 2 seconds delay before next wave
                 }
@@ -552,17 +591,69 @@
             updateMinimap();
 
             // Update FPS Counter
-            const sinceStart = now - startTime;
-            const currentFps = Math.round(1000 / (sinceStart / (++frameCount)));
+            const currentFps = Math.round(1000 / elapsed);
             document.getElementById('fpsCounter').innerText = `FPS: ${currentFps}`;
         }
     }
 
-    let frameCount = 0;
+    function movePlayer(delta) {
+        // Move along X axis
+        yawObject.translateX(velocity.x * delta);
+
+        // Check for collision
+        const playerRadius = 5; // Adjust as needed
+        const playerSphere = new THREE.Sphere(yawObject.position.clone(), playerRadius);
+
+        let collision = false;
+        if (!activePowerUps.walkThroughWalls) {
+            for (let i = 0; i < collidableMeshList.length; i++) {
+                const mesh = collidableMeshList[i];
+                const obstacleBox = new THREE.Box3().setFromObject(mesh);
+                if (obstacleBox.intersectsSphere(playerSphere)) {
+                    collision = true;
+                    break;
+                }
+            }
+        }
+
+        if (collision) {
+            // Move back along X axis
+            yawObject.translateX(-velocity.x * delta);
+            velocity.x = 0;
+        }
+
+        // Move along Z axis
+        yawObject.translateZ(velocity.z * delta);
+
+        // Check for collision
+        playerSphere.center.copy(yawObject.position);
+        collision = false;
+        if (!activePowerUps.walkThroughWalls) {
+            for (let i = 0; i < collidableMeshList.length; i++) {
+                const mesh = collidableMeshList[i];
+                const obstacleBox = new THREE.Box3().setFromObject(mesh);
+                if (obstacleBox.intersectsSphere(playerSphere)) {
+                    collision = true;
+                    break;
+                }
+            }
+        }
+
+        if (collision) {
+            // Move back along Z axis
+            yawObject.translateZ(-velocity.z * delta);
+            velocity.z = 0;
+        }
+
+        // Keep the player inside the maze
+        const roomLimit = (mazeSize * cellSize) / 2 - cellSize;
+        yawObject.position.x = THREE.MathUtils.clamp(yawObject.position.x, -roomLimit, roomLimit);
+        yawObject.position.z = THREE.MathUtils.clamp(yawObject.position.z, -roomLimit, roomLimit);
+    }
 
     function createGun() {
         const gunGeometry = new THREE.BoxGeometry(2, 2, 8);
-        const gunMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const gunMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
         gun = new THREE.Mesh(gunGeometry, gunMaterial);
         pitchObject.add(gun);
     }
@@ -581,20 +672,32 @@
         }
         document.getElementById('scoreboard').innerHTML = `Round: ${round}<br>Enemies Remaining: ${enemiesRemaining}`;
         showMessage(`Round ${round}: Start`);
+
+        // Spawn new power-ups
+        spawnPowerUps();
     }
 
     function spawnEnemy() {
         const enemy = createEnemy();
 
-        const roomLimit = 800; // Adjusted for larger arena
         const minDistance = 100; // Minimum distance from player
         let spawnPosition = new THREE.Vector3();
 
-        do {
-            spawnPosition.x = Math.random() * roomLimit * 2 - roomLimit;
-            spawnPosition.z = Math.random() * roomLimit * 2 - roomLimit;
-            spawnPosition.y = 0;
-        } while (spawnPosition.distanceTo(yawObject.position) < minDistance);
+        let validPosition = false;
+        while (!validPosition) {
+            const mazeX = Math.floor(Math.random() * mazeSize);
+            const mazeY = Math.floor(Math.random() * mazeSize);
+
+            if (maze[mazeX][mazeY] === 0) {
+                spawnPosition.x = mazeX * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2;
+                spawnPosition.z = mazeY * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2;
+                spawnPosition.y = 0;
+
+                if (spawnPosition.distanceTo(yawObject.position) >= minDistance) {
+                    validPosition = true;
+                }
+            }
+        }
 
         enemy.position.copy(spawnPosition);
 
@@ -609,6 +712,14 @@
         scene.add(enemy);
         enemiesRemaining++;
         document.getElementById('scoreboard').innerHTML = `Round: ${round}<br>Enemies Remaining: ${enemiesRemaining}`;
+
+        // Create and add enemy marker to minimap
+        const enemyMarkerGeometry = new THREE.CircleGeometry(5, 6); // Reduced segments
+        const enemyMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const enemyMarker = new THREE.Mesh(enemyMarkerGeometry, enemyMarkerMaterial);
+        enemyMarker.rotation.x = -Math.PI / 2; // Face upwards
+        enemy.userData.minimapMarker = enemyMarker;
+        minimapScene.add(enemyMarker);
     }
 
     function createEnemy() {
@@ -617,27 +728,29 @@
         // Increase the size of the enemy
         enemy.scale.set(0.5, 0.5, 0.5);
 
+        // Simplified enemy model to reduce vertices
+        const materialRed = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const materialPink = new THREE.MeshBasicMaterial({ color: 0xffcccc });
+        const materialBlue = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+
         // Torso
         const torsoGeometry = new THREE.BoxGeometry(10, 15, 5);
-        const torsoMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+        const torso = new THREE.Mesh(torsoGeometry, materialRed);
         torso.position.y = 15;
         enemy.add(torso);
 
         // Head
         const headGeometry = new THREE.BoxGeometry(8, 8, 8);
-        const headMaterial = new THREE.MeshStandardMaterial({ color: 0xffcccc });
-        const head = new THREE.Mesh(headGeometry, headMaterial);
+        const head = new THREE.Mesh(headGeometry, materialPink);
         head.position.y = 28;
         enemy.add(head);
 
         // Arms
         const armGeometry = new THREE.BoxGeometry(3, 15, 3);
         armGeometry.translate(0, -7.5, 0); // Adjust pivot to shoulder
-        const armMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+        const leftArm = new THREE.Mesh(armGeometry, materialRed);
         leftArm.position.set(-7, 22.5, 0); // Positioned at shoulder height
-        const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+        const rightArm = new THREE.Mesh(armGeometry, materialRed);
         rightArm.position.set(7, 22.5, 0);
         enemy.add(leftArm);
         enemy.add(rightArm);
@@ -645,10 +758,9 @@
         // Legs
         const legGeometry = new THREE.BoxGeometry(4, 15, 4);
         legGeometry.translate(0, -7.5, 0); // Adjust pivot to hip
-        const legMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
-        const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+        const leftLeg = new THREE.Mesh(legGeometry, materialBlue);
         leftLeg.position.set(-3, 15, 0); // Positioned at hip height
-        const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+        const rightLeg = new THREE.Mesh(legGeometry, materialBlue);
         rightLeg.position.set(3, 15, 0);
         enemy.add(leftLeg);
         enemy.add(rightLeg);
@@ -660,11 +772,8 @@
         for (let i = enemies.length - 1; i >= 0; i--) {
             const enemy = enemies[i];
 
-            // Move towards player
-            const direction = new THREE.Vector3();
-            direction.subVectors(yawObject.position, enemy.position).normalize();
-            direction.y = 0; // Ensure enemy moves only in xz plane
-            enemy.position.add(direction.multiplyScalar(30 * delta)); // Adjusted speed
+            // Move enemy with pathfinding
+            moveEnemyWithPathfinding(enemy, delta);
 
             // Update bounding box position
             enemy.userData.boundingBox.setFromObject(enemy);
@@ -697,14 +806,244 @@
             // Animate arms
             enemy.children[2].rotation.x = -angle; // Left arm
             enemy.children[3].rotation.x = angle; // Right arm
+
+            // Update enemy marker position
+            if (enemy.userData.minimapMarker) {
+                enemy.userData.minimapMarker.position.set(enemy.position.x, 1, enemy.position.z);
+            }
         }
+    }
+
+    function moveEnemyWithPathfinding(enemy, delta) {
+        // Update pathfinding timer
+        if (enemy.userData.pathTimer === undefined) {
+            enemy.userData.pathTimer = 0;
+        }
+        enemy.userData.pathTimer += delta;
+
+        // Calculate enemy's current cell
+        const enemyCellX = Math.floor((enemy.position.x + (mazeSize * cellSize) / 2) / cellSize);
+        const enemyCellY = Math.floor((enemy.position.z + (mazeSize * cellSize) / 2) / cellSize);
+
+        // Calculate player's current cell
+        const playerCellX = Math.floor((yawObject.position.x + (mazeSize * cellSize) / 2) / cellSize);
+        const playerCellY = Math.floor((yawObject.position.z + (mazeSize * cellSize) / 2) / cellSize);
+
+        // Recalculate path every 2 seconds or if the player moves more than one cell away
+        if (!enemy.userData.path || enemy.userData.path.length === 0 || enemy.userData.pathTimer > 2 ||
+            Math.abs(enemy.userData.targetCellX - playerCellX) > 1 || Math.abs(enemy.userData.targetCellY - playerCellY) > 1) {
+            // Reset pathfinding timer
+            enemy.userData.pathTimer = 0;
+
+            // A* Pathfinding
+            const path = findPath(enemyCellX, enemyCellY, playerCellX, playerCellY);
+            if (path && path.length > 1) {
+                enemy.userData.path = path;
+                enemy.userData.targetCellX = playerCellX;
+                enemy.userData.targetCellY = playerCellY;
+                enemy.userData.currentPathIndex = 1; // Start at the next cell
+            } else {
+                enemy.userData.path = null;
+                return; // No path found
+            }
+        }
+
+        if (enemy.userData.path && enemy.userData.currentPathIndex < enemy.userData.path.length) {
+            // Get next cell in the path
+            const nextCell = enemy.userData.path[enemy.userData.currentPathIndex];
+            const targetPosition = new THREE.Vector3(
+                nextCell.x * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2,
+                enemy.position.y,
+                nextCell.y * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2
+            );
+
+            // Move towards target position
+            const direction = new THREE.Vector3();
+            direction.subVectors(targetPosition, enemy.position);
+            const distance = direction.length();
+
+            if (distance < 1) {
+                // Reached the cell, move to next cell in path
+                enemy.userData.currentPathIndex++;
+            } else {
+                direction.normalize();
+                const moveDistance = 30 * delta; // Adjusted speed
+                const movement = direction.clone().multiplyScalar(moveDistance);
+
+                enemy.position.add(movement);
+            }
+        } else {
+            // Reached end of path
+            enemy.userData.path = null;
+        }
+    }
+
+    // Implement a Min-Heap (Priority Queue) for the Open Set
+    class MinHeap {
+        constructor() {
+            this.heap = [];
+        }
+
+        push(node) {
+            this.heap.push(node);
+            this.bubbleUp(this.heap.length - 1);
+        }
+
+        pop() {
+            const topVal = this.heap[0];
+            const bottom = this.heap.pop();
+            if (this.heap.length > 0) {
+                this.heap[0] = bottom;
+                this.sinkDown(0);
+            }
+            return topVal;
+        }
+
+        bubbleUp(n) {
+            const element = this.heap[n];
+            while (n > 0) {
+                const parentN = Math.floor((n + 1) / 2) - 1;
+                const parent = this.heap[parentN];
+                if (element.f >= parent.f) break;
+                this.heap[parentN] = element;
+                this.heap[n] = parent;
+                n = parentN;
+            }
+        }
+
+        sinkDown(n) {
+            const length = this.heap.length;
+            const element = this.heap[n];
+
+            while (true) {
+                let child2N = (n + 1) * 2;
+                let child1N = child2N - 1;
+                let swap = null;
+
+                if (child1N < length) {
+                    const child1 = this.heap[child1N];
+                    if (child1.f < element.f) {
+                        swap = child1N;
+                    }
+                }
+                if (child2N < length) {
+                    const child2 = this.heap[child2N];
+                    if ((swap === null ? element.f : this.heap[child1N].f) > child2.f) {
+                        swap = child2N;
+                    }
+                }
+                if (swap === null) break;
+
+                this.heap[n] = this.heap[swap];
+                this.heap[swap] = element;
+                n = swap;
+            }
+        }
+
+        size() {
+            return this.heap.length;
+        }
+
+        isEmpty() {
+            return this.heap.length === 0;
+        }
+    }
+
+    function findPath(startX, startY, endX, endY) {
+        // Reset nodes
+        for (let x = 0; x < mazeSize; x++) {
+            for (let y = 0; y < mazeSize; y++) {
+                const node = grid[x][y];
+                node.f = 0;
+                node.g = 0;
+                node.h = 0;
+                node.parent = null;
+                node.closed = false;
+                node.visited = false;
+            }
+        }
+
+        const startNode = grid[startX][startY];
+        const endNode = grid[endX][endY];
+
+        const openSet = new MinHeap();
+        openSet.push(startNode);
+        startNode.visited = true;
+
+        while (!openSet.isEmpty()) {
+            const currentNode = openSet.pop();
+
+            if (currentNode === endNode) {
+                // Path found
+                const path = [];
+                let current = currentNode;
+                while (current) {
+                    path.push(current);
+                    current = current.parent;
+                }
+                return path.reverse();
+            }
+
+            currentNode.closed = true;
+
+            const neighbors = getNeighbors(currentNode);
+
+            for (let i = 0; i < neighbors.length; i++) {
+                const neighbor = neighbors[i];
+
+                if (neighbor.closed || !neighbor.walkable) {
+                    continue;
+                }
+
+                const tentativeG = currentNode.g + 1;
+
+                if (!neighbor.visited || tentativeG < neighbor.g) {
+                    neighbor.visited = true;
+                    neighbor.parent = currentNode;
+                    neighbor.h = heuristic(neighbor, endNode);
+                    neighbor.g = tentativeG;
+                    neighbor.f = neighbor.g + neighbor.h;
+
+                    openSet.push(neighbor);
+                }
+            }
+        }
+
+        // No path found
+        return null;
+    }
+
+    function getNeighbors(node) {
+        const neighbors = [];
+        const directions = [
+            { x: 0, y: -1 }, // Up
+            { x: 1, y: 0 },  // Right
+            { x: 0, y: 1 },  // Down
+            { x: -1, y: 0 }  // Left
+        ];
+
+        for (let i = 0; i < directions.length; i++) {
+            const nx = node.x + directions[i].x;
+            const ny = node.y + directions[i].y;
+
+            if (nx >= 0 && nx < mazeSize && ny >= 0 && ny < mazeSize) {
+                neighbors.push(grid[nx][ny]);
+            }
+        }
+
+        return neighbors;
+    }
+
+    function heuristic(a, b) {
+        // Manhattan distance
+        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
     function shoot() {
         if (bullets.length > 50) return; // Limit the number of active bullets
 
-        const bulletGeometry = new THREE.SphereGeometry(1, 8, 8);
-        const bulletMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+        const bulletGeometry = new THREE.SphereGeometry(1, 6, 6); // Reduced segments
+        const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
         const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
 
         // Start bullet from the gun's tip
@@ -715,7 +1054,10 @@
         // Get the direction the camera is facing
         const direction = new THREE.Vector3();
         camera.getWorldDirection(direction);
-        bullet.userData.velocity = direction.clone().multiplyScalar(500);
+
+        // Adjust bullet speed if fast shooting is active
+        const bulletSpeed = activePowerUps.fastShooting ? 1000 : 500;
+        bullet.userData.velocity = direction.clone().multiplyScalar(bulletSpeed);
 
         bullets.push(bullet);
         scene.add(bullet);
@@ -746,10 +1088,134 @@
                     document.getElementById('scoreboard').innerHTML = `Round: ${round}<br>Enemies Remaining: ${enemiesRemaining}`;
                     scene.remove(bullet);
                     bullets.splice(i, 1);
+
+                    // Remove enemy marker
+                    if (enemy.userData.minimapMarker) {
+                        minimapScene.remove(enemy.userData.minimapMarker);
+                    }
                     break;
                 }
             }
         }
+    }
+
+    // Power-Up Functions
+    function spawnPowerUps() {
+        // Remove existing power-ups
+        powerUps.forEach(powerUp => {
+            scene.remove(powerUp.mesh);
+            if (powerUp.minimapMarker) {
+                minimapScene.remove(powerUp.minimapMarker);
+            }
+        });
+        powerUps.length = 0;
+
+        // Determine number of power-ups to spawn
+        const powerUpsToSpawn = 5; // Adjust as needed
+
+        for (let i = 0; i < powerUpsToSpawn; i++) {
+            const powerUpType = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
+            spawnPowerUp(powerUpType);
+        }
+    }
+
+    function spawnPowerUp(type) {
+        const geometry = new THREE.CylinderGeometry(5, 5, 2, 12); // Coin shape
+        geometry.translate(0, 1, 0); // Adjust so bottom sits on ground
+        const material = new THREE.MeshBasicMaterial({ color: type.color });
+        const mesh = new THREE.Mesh(geometry, material);
+        // mesh.rotation.x = -Math.PI / 2; // Remove this line to keep it upright
+
+        const minDistance = 50; // Minimum distance from player
+        let spawnPosition = new THREE.Vector3();
+
+        let validPosition = false;
+        while (!validPosition) {
+            const mazeX = Math.floor(Math.random() * mazeSize);
+            const mazeY = Math.floor(Math.random() * mazeSize);
+
+            if (maze[mazeX][mazeY] === 0) {
+                spawnPosition.x = mazeX * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2;
+                spawnPosition.z = mazeY * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2;
+                spawnPosition.y = 0; // On ground level
+
+                if (spawnPosition.distanceTo(yawObject.position) >= minDistance) {
+                    validPosition = true;
+                }
+            }
+        }
+
+        mesh.position.copy(spawnPosition);
+
+        // Add to scene and powerUps array
+        scene.add(mesh);
+
+        // Add to minimap
+        const markerGeometry = new THREE.CircleGeometry(3, 6);
+        const markerMaterial = new THREE.MeshBasicMaterial({ color: type.color });
+        const minimapMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+        minimapMarker.rotation.x = -Math.PI / 2;
+        minimapMarker.position.set(spawnPosition.x, 1, spawnPosition.z);
+        minimapScene.add(minimapMarker);
+
+        powerUps.push({
+            type: type,
+            mesh: mesh,
+            minimapMarker: minimapMarker
+        });
+    }
+
+    function updatePowerUps(delta) {
+        // Rotate power-ups for a visual effect
+        powerUps.forEach(powerUp => {
+            powerUp.mesh.rotation.y += delta;
+        });
+
+        // Check for collision with player
+        for (let i = powerUps.length - 1; i >= 0; i--) {
+            const powerUp = powerUps[i];
+            const dx = powerUp.mesh.position.x - yawObject.position.x;
+            const dz = powerUp.mesh.position.z - yawObject.position.z;
+            const distance = Math.sqrt(dx * dx + dz * dz);
+            if (distance < 10) {
+                // Activate power-up
+                activatePowerUp(powerUp.type);
+
+                // Remove power-up from scene and arrays
+                scene.remove(powerUp.mesh);
+                minimapScene.remove(powerUp.minimapMarker);
+                powerUps.splice(i, 1);
+
+                // Show message
+                showMessage(`Picked up ${powerUp.type.name} Power-Up!`);
+            }
+        }
+
+        // Update active power-ups
+        for (let key in activePowerUps) {
+            activePowerUps[key] -= delta;
+            if (activePowerUps[key] <= 0) {
+                delete activePowerUps[key];
+            }
+        }
+
+        // Update power-up display
+        updatePowerUpsDisplay();
+    }
+
+    function activatePowerUp(type) {
+        activePowerUps[type.effect] = type.duration;
+    }
+
+    function updatePowerUpsDisplay() {
+        const display = document.getElementById('powerUpsDisplay');
+        let html = '';
+        for (let key in activePowerUps) {
+            const timeLeft = Math.ceil(activePowerUps[key]);
+            const type = powerUpTypes.find(p => p.effect === key);
+            html += `<span style="color: #${type.color.toString(16)}">${type.name}: ${timeLeft}s</span><br>`;
+        }
+        display.innerHTML = html;
     }
 
     // Function to display messages
@@ -763,21 +1229,107 @@
         }, 3000);
     }
 
+    // Functions to show and hide black overlay
+    function showBlackOverlay() {
+        document.getElementById('blackOverlay').style.display = 'block';
+    }
+
+    function hideBlackOverlay() {
+        document.getElementById('blackOverlay').style.display = 'none';
+    }
+
     // Function to update the minimap
     function updateMinimap() {
-        // Position the minimap camera above the player
-        minimapCamera.position.set(yawObject.position.x, 500, yawObject.position.z);
+        if (isMinimapExpanded) {
+            // Show full arena
+            const arenaSize = (mazeSize * cellSize) / 2;
+            minimapCamera.left = -arenaSize;
+            minimapCamera.right = arenaSize;
+            minimapCamera.top = arenaSize;
+            minimapCamera.bottom = -arenaSize;
+            minimapCamera.position.set(0, 1000, 0);
+        } else {
+            // Position the minimap camera above the player
+            minimapCamera.left = -window.innerWidth * minimapScale;
+            minimapCamera.right = window.innerWidth * minimapScale;
+            minimapCamera.top = window.innerHeight * minimapScale;
+            minimapCamera.bottom = -window.innerHeight * minimapScale;
+            minimapCamera.position.set(yawObject.position.x, 500, yawObject.position.z);
+        }
+        minimapCamera.updateProjectionMatrix();
         minimapCamera.rotation.set(-Math.PI / 2, 0, 0);
 
-        // Adjust the camera's orthographic size
-        minimapCamera.left = -window.innerWidth * minimapScale;
-        minimapCamera.right = window.innerWidth * minimapScale;
-        minimapCamera.top = window.innerHeight * minimapScale;
-        minimapCamera.bottom = -window.innerHeight * minimapScale;
-        minimapCamera.updateProjectionMatrix();
+        // Adjust marker scales based on minimap state
+        const markerScale = isMinimapExpanded ? 3 : 1;
+        playerMarker.scale.set(markerScale, markerScale, markerScale);
 
-        // Render the scene from the minimap camera
-        minimapRenderer.render(scene, minimapCamera);
+        enemies.forEach(enemy => {
+            if (enemy.userData.minimapMarker) {
+                enemy.userData.minimapMarker.scale.set(markerScale, markerScale, markerScale);
+            }
+        });
+
+        // Update player marker position
+        playerMarker.position.set(yawObject.position.x, 1, yawObject.position.z);
+
+        // Render the minimap scene
+        minimapRenderer.render(minimapScene, minimapCamera);
+    }
+
+    function regenerateMaze() {
+        // Clear existing maze
+        collidableMeshList.forEach(mesh => {
+            scene.remove(mesh);
+        });
+        collidableMeshList.length = 0;
+
+        // Clear existing maze walls from minimap
+        minimapWalls.forEach(wall => {
+            minimapScene.remove(wall);
+        });
+        minimapWalls.length = 0;
+
+        grid.length = 0;
+
+        // Remove enemies and their markers
+        enemies.forEach(enemy => {
+            scene.remove(enemy);
+            if (enemy.userData.minimapMarker) {
+                minimapScene.remove(enemy.userData.minimapMarker);
+            }
+        });
+        enemies.length = 0;
+
+        // Remove bullets
+        bullets.forEach(bullet => {
+            scene.remove(bullet);
+        });
+        bullets.length = 0;
+
+        // Remove power-ups
+        powerUps.forEach(powerUp => {
+            scene.remove(powerUp.mesh);
+            if (powerUp.minimapMarker) {
+                minimapScene.remove(powerUp.minimapMarker);
+            }
+        });
+        powerUps.length = 0;
+
+        // Generate new maze
+        generateMaze();
+        createMaze();
+
+        // Reset player position and rotation
+        yawObject.position.set(
+            1 * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2,
+            yawObject.position.y,
+            1 * cellSize - (mazeSize * cellSize) / 2 + cellSize / 2
+        );
+        yawObject.rotation.set(0, 0, 0);
+        pitchObject.rotation.set(0, 0, 0);
+
+        // Update minimap player marker position
+        playerMarker.position.set(yawObject.position.x, 1, yawObject.position.z);
     }
 </script>
 
